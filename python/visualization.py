@@ -2,7 +2,7 @@ from __future__ import print_function
 from __future__ import division
 import time
 import numpy as np
-from scipy.ndimage.filters import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d
 import config
 import microphone
 import dsp
@@ -36,7 +36,7 @@ def frames_per_second():
         to reduce noise.
     """
     global _time_prev, _fps
-    time_now = time.time() * 1000.0
+    time_now = time.perf_counter() * 1000.0
     dt = time_now - _time_prev
     _time_prev = time_now
     if dt == 0.0:
@@ -240,7 +240,7 @@ def microphone_update(audio_samples):
     
     if config.DISPLAY_FPS:
         fps = frames_per_second()
-        if time.time() - 0.5 > prev_fps_update:
+        if time.time() - prev_fps_update > 0.5:
             prev_fps_update = time.time()
             print('FPS {:.0f} / {:.0f}'.format(fps, config.FPS))
 

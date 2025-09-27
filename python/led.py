@@ -1,8 +1,7 @@
-from __future__ import print_function
-from __future__ import division
-
-import platform
+import time
 import numpy as np
+import board
+import neopixel
 import config
 
 # ESP8266 uses WiFi communication
@@ -12,10 +11,16 @@ if config.DEVICE == 'esp8266':
 # Raspberry Pi controls the LED strip directly
 elif config.DEVICE == 'pi':
     from rpi_ws281x import *
-    strip = Adafruit_NeoPixel(config.N_PIXELS, config.LED_PIN,
-                                       config.LED_FREQ_HZ, config.LED_DMA,
-                                       config.LED_INVERT, config.BRIGHTNESS)
-    strip.begin()
+    # Initialize the LED strip with built-in gamma correction
+    # NeoPixel's gamma is approximately 2.8 by default; you can adjust if needed
+    strip = neopixel.NeoPixel(
+    getattr(board, f"D{config.LED_PIN}"),  # GPIO pin
+    config.N_PIXELS,
+    brightness=config.BRIGHTNESS / 255,    # 0.0–1.0
+    auto_write=False,
+    pixel_order=neopixel.GRB,             # adjust to your strip
+)
+    
 elif config.DEVICE == 'blinkstick':
     from blinkstick import blinkstick
     import signal
@@ -34,13 +39,9 @@ elif config.DEVICE == 'blinkstick':
 _gamma = np.load(config.GAMMA_TABLE_PATH)
 """Gamma lookup table used for nonlinear brightness correction"""
 
-_prev_pixels = np.tile(253, (3, config.N_PIXELS))
-"""Pixel values that were most recently displayed on the LED strip"""
-
-pixels = np.tile(1, (3, config.N_PIXELS))
-"""Pixel values for the LED strip"""
-
-_is_python_2 = int(platform.python_version_tuple()[0]) == 2
+# Pixel arrays (R, G, B × number of pixels)
+pixels = np.zeros((3, config.N_PIXELS), dtype=int)
+_prev_pixels = np.zeros((3, config.N_PIXELS), dtype=int)  # store previous state
 
 def _update_esp8266():
     """Sends UDP packets to ESP8266 to update LED strip values
@@ -69,45 +70,38 @@ def _update_esp8266():
     n_packets = len(idx) // MAX_PIXELS_PER_PACKET + 1
     idx = np.array_split(idx, n_packets)
     for packet_indices in idx:
-        m = '' if _is_python_2 else []
         for i in packet_indices:
-            if _is_python_2:
-                m += chr(i) + chr(p[0][i]) + chr(p[1][i]) + chr(p[2][i])
-            else:
-                m.append(i)  # Index of pixel to change
-                m.append(p[0][i])  # Pixel red value
-                m.append(p[1][i])  # Pixel green value
-                m.append(p[2][i])  # Pixel blue value
-        m = m if _is_python_2 else bytes(m)
+            m.append(i)  # Index of pixel to change
+            m.append(p[0][i])  # Pixel red value
+            m.append(p[1][i])  # Pixel green value
+            m.append(p[2][i])  # Pixel blue value
+        m = bytes(m)
         _sock.sendto(m, (config.UDP_IP, config.UDP_PORT))
     _prev_pixels = np.copy(p)
 
 
 def _update_pi():
-    """Writes new LED values to the Raspberry Pi's LED strip
-
-    Raspberry Pi uses the rpi_ws281x to control the LED strip directly.
-    This function updates the LED strip with new values.
-    """
-    global pixels, _prev_pixels
-    # Truncate values and cast to integer
+    """Update NeoPixel strip efficiently using NumPy, skipping unchanged pixels."""
+    global _prev_pixels
+    global pixels
+    # Make sure pixel arrays match the configured number of LEDs
+    if pixels.shape[1] != config.N_PIXELS:
+        pixels = np.resize(pixels, (3, config.N_PIXELS))
+    if _prev_pixels.shape[1] != config.N_PIXELS:
+        _prev_pixels = np.resize(_prev_pixels, (3, config.N_PIXELS))
+    # Clamp values 0–255
+    
     pixels = np.clip(pixels, 0, 255).astype(int)
-    # Optional gamma correction
     p = _gamma[pixels] if config.SOFTWARE_GAMMA_CORRECTION else np.copy(pixels)
-    # Encode 24-bit LED values in 32 bit integers
-    r = np.left_shift(p[0][:].astype(int), 8)
-    g = np.left_shift(p[1][:].astype(int), 16)
-    b = p[2][:].astype(int)
-    rgb = np.bitwise_or(np.bitwise_or(r, g), b)
-    # Update the pixels
-    for i in range(config.N_PIXELS):
-        # Ignore pixels if they haven't changed (saves bandwidth)
+    # Only update pixels that changed
+    for i in range(p.shape[1]):
         if np.array_equal(p[:, i], _prev_pixels[:, i]):
-            continue
-            
-        strip._led_data[i] = int(rgb[i])
-    _prev_pixels = np.copy(p)
+            continue  # skip unchanged pixels
+        strip[i] = (int(p[0, i]), int(p[1, i]), int(p[2, i]))  # R,G,B
     strip.show()
+    _prev_pixels[:] = p
+
+
 
 def _update_blinkstick():
     """Writes new LED values to the Blinkstick.
@@ -154,7 +148,7 @@ def update():
 if __name__ == '__main__':
     import time
     # Turn all pixels off
-    pixels *= 0
+    pixels[:, :] = 0
     pixels[0, 0] = 255  # Set 1st pixel red
     pixels[1, 1] = 255  # Set 2nd pixel green
     pixels[2, 2] = 255  # Set 3rd pixel blue
